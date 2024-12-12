@@ -223,6 +223,9 @@ int main(int argc, char *argv[])
     auto host_view_LR = ViewLRHost("host_view_LR", N0, N1);
     mynvtxRangePop();
 
+    const double cpu_value = 2.0;
+    const double gpu_value = 4.0;
+
     // Launch init kernels
     InitKernel<LayoutLeft, Device>(device_view_LL, gpu_value);
     InitKernel<LayoutRight, Device>(device_view_LR, gpu_value);
@@ -255,9 +258,6 @@ int main(int argc, char *argv[])
     Kokkos::deep_copy(host_view_LR, device_view_LR);
     mynvtxRangePop();
 
-
-    const double cpu_value = 2.0;
-    const double gpu_value = 4.0;
     // Deep copy LR to LL H2D transpose on device
     {
       mynvtxRangePush("check", "black");
