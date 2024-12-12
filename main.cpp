@@ -122,6 +122,29 @@ void InitKernel(View<Layout, ExecSpace> &view, const double &value = 1.0)
   mynvtxRangePop();
 }
 
+// kernel that we are timing
+// Inputs are the layout, the execution space
+template <class Layout, class ExecSpace>
+void ReadKernel(View<Layout, ExecSpace> &view)
+{
+
+  const int N0 = view.extent(0);
+  const int N1 = view.extent(1);
+
+  Kokkos::MDRangePolicy<ExecSpace, Kokkos::Rank<2>> policy({0, 0}, {N0, N1});
+
+  auto message = message_generator<Layout, ExecSpace>(__func__);
+  auto color = color_generator<ExecSpace>();
+
+  Kokkos::fence();
+  mynvtxRangePush(message, color);
+
+  Kokkos::parallel_for(message, policy, KOKKOS_LAMBDA(const int i, const int j) { double a = view(i,j); });
+
+  Kokkos::fence();
+  mynvtxRangePop();
+}
+
 template <class Layout_dest, class Layout_src, class ExecSpace>
 void transposeKernel(View<Layout_dest, ExecSpace> &view_dest, View<Layout_src, ExecSpace> &view_src, const int nlaunch = 1)
 {
@@ -231,6 +254,12 @@ int main(int argc, char *argv[])
     InitKernel<LayoutRight, Device>(device_view_LR, gpu_value);
     InitKernel<LayoutLeft, Host>(host_view_LL, cpu_value);
     InitKernel<LayoutRight, Host>(host_view_LR, cpu_value);
+
+    // Read kernels
+    ReadKernel<LayoutLeft, Device>(device_view_LL);
+    ReadKernel<LayoutRight, Device>(device_view_LR);
+    ReadKernel<LayoutLeft, Host>(host_view_LL);
+    ReadKernel<LayoutRight, Host>(host_view_LR);
 
     // Launch blurr kernels
     const int nlaunch_gpu = 1;
