@@ -1,5 +1,5 @@
 # some_timings_kokkos
-Some timing of kokkos experiments. To be launched and profiled with nsight systems
+Some timing of kokkos experiments corresponding to View's layouts. To be launched and profiled with nsight system.
 
 get kokkos and mynvtx:
 ```
@@ -25,4 +25,6 @@ nsys-ui profile ./my_program
 Without the UI (load the output in Nsight Systems)
 ```
 nsys profile ./my_program 
+nsys profile --force-overwrite true --output my_profile ./my_program
 ```
+
