@@ -102,7 +102,7 @@ void blurrKernel(View<Layout, ExecSpace> &view, const int nlaunch = 1)
 // kernel that we are timing
 // Inputs are the layout, the execution space
 template <class Layout, class ExecSpace>
-void InitKernel(View<Layout, ExecSpace> &view, const double &value = 1.0)
+void InitKernel(View<Layout, ExecSpace> &view, const double &value = 1.0, const bool range=true)
 {
 
   const int N0 = view.extent(0);
@@ -114,18 +114,18 @@ void InitKernel(View<Layout, ExecSpace> &view, const double &value = 1.0)
   auto color = color_generator<ExecSpace>();
 
   Kokkos::fence();
-  mynvtxRangePush(message, color);
+  if (range) mynvtxRangePush(message, color);
 
   Kokkos::parallel_for(message, policy, KOKKOS_LAMBDA(const int i, const int j) { view(i, j) = value + i - j; });
 
   Kokkos::fence();
-  mynvtxRangePop();
+  if (range) mynvtxRangePop();
 }
 
 // kernel that we are timing
 // Inputs are the layout, the execution space
 template <class Layout, class ExecSpace>
-void ReadKernel(View<Layout, ExecSpace> &view)
+void ReadKernel(const View<Layout, ExecSpace> &view)
 {
 
   const int N0 = view.extent(0);
@@ -146,7 +146,7 @@ void ReadKernel(View<Layout, ExecSpace> &view)
 }
 
 template <class Layout_dest, class Layout_src, class ExecSpace>
-void transposeKernel(View<Layout_dest, ExecSpace> &view_dest, View<Layout_src, ExecSpace> &view_src, const int nlaunch = 1)
+void transposeKernel(View<Layout_dest, ExecSpace> &view_dest, const View<Layout_src, ExecSpace> &view_src, const int nlaunch = 1)
 {
 
   const int N0 = view_dest.extent(0);
@@ -212,6 +212,128 @@ void check_result(View<Layout, ExecSpace> &view, const double &value = 1.0)
   }
 }
 
+const double cpu_value = 2.0;
+const double gpu_value = 4.0;
+
+//deep copy routine that handles non compatible exec spaces and layouts
+//Non trivial template parameters:
+//ExecSpace_tmp: the execution space on which we allocate the tmp buffer and perform the "transpose"
+//Non trivial runtime parameters:
+//use_transpose_kernel: Use the transpose kernel i wrote to perform the transpose. Otherwise, use deep_copy
+//check: Check the validity of the result
+template <class Layout_dest, class Layout_src, class ExecSpace_dest, class ExecSpace_src, class ExecSpace_tmp=Device>
+void deep_copy_generalized(View<Layout_dest, ExecSpace_dest> &view_dest,
+                           View<Layout_src, ExecSpace_src> &view_src,
+                           const bool use_transpose_kernel=false,
+                           const bool check=false)
+{
+
+  if (check)
+    {
+      const bool srcIsDevice = std::is_same<ExecSpace_src, Device>::value;
+      const double value_init = srcIsDevice ? gpu_value : cpu_value;
+      //mynvtxRangePush("check", "black");
+      InitKernel<Layout_src, ExecSpace_src>(view_src, value_init, /*create a nvtx range*/ false);
+      Kokkos::fence();
+      //mynvtxRangePop();
+    }
+
+  std::string string_Layout_src = (std::is_same<LayoutLeft, Layout_src>::value) ? "LL" : "LR";
+  std::string string_Layout_dest = (std::is_same<LayoutLeft, Layout_dest>::value) ? "LL" : "LR";
+  std::string string_Space_src = (std::is_same<ExecSpace_src, Device>::value) ? "D" : "H";
+  std::string string_Space_dest = (std::is_same<ExecSpace_dest, Device>::value) ? "D" : "H";
+  std::string string_transpose_type = (use_transpose_kernel) ? "kernel" : "deep copy";
+  std::string string_transpose_space = (std::is_same<ExecSpace_tmp, Device>::value) ? "D" : "H";
+
+  std::string name ="deep_copy gen. "
+     // string_Layout_src+"2"+string_Layout_dest+" "
+      +string_Space_src+"2"+string_Space_dest
+      +" with "+string_transpose_type +" on "+ string_transpose_space;
+
+  std::string name_alloc="allocation on "+string_transpose_space;
+  std::string name_transpose="transpose via "+string_transpose_type+ " on "+string_transpose_space;
+  std::string name_deep_copy="deep copy "+string_Space_src+"2"+string_Space_dest;
+
+  mynvtxRangePush(name);
+
+  constexpr bool sameExecSpace = (std::is_same<ExecSpace_dest, ExecSpace_src>::value);
+  constexpr bool transposeOnSrcExecSpace = (std::is_same<ExecSpace_src, ExecSpace_tmp>::value);
+  constexpr bool transposeOnDestExecSpace = (std::is_same<ExecSpace_dest, ExecSpace_tmp>::value);
+
+  const int N0 = view_src.extent(0);
+  const int N1 = view_src.extent(1);
+
+  //Same Exespace --> Deep copy works even for different layouts
+  if constexpr (sameExecSpace)
+    {
+      Kokkos::deep_copy(view_dest, view_src);
+    }
+  else
+    {
+      if constexpr (transposeOnSrcExecSpace)
+        {
+          mynvtxRangePush(name_alloc);
+          auto view_tmp = View<Layout_dest, ExecSpace_tmp>("view_tmp", N0,N1);
+          mynvtxRangePop(name_alloc);
+
+          mynvtxRangePush(name_transpose);
+          if(use_transpose_kernel)
+            {
+              transposeKernel<Layout_dest, Layout_src, ExecSpace_tmp>(view_tmp, view_src);
+            }
+          else //use deep copy (kokkos doc recommandation)
+            {
+              Kokkos::deep_copy(view_tmp, view_src); //Legal because on the same execspace, does the transpose
+            }
+          mynvtxRangePop(name_transpose);
+
+          mynvtxRangePush(name_deep_copy);
+          Kokkos::deep_copy(view_dest, view_tmp);//Legal because same layout, does the H2D / D2H
+          mynvtxRangePop(name_deep_copy);
+
+        }
+      else if constexpr (transposeOnDestExecSpace)
+        {
+          mynvtxRangePush(name_alloc);
+          auto view_tmp = View<Layout_src, ExecSpace_tmp>("view_tmp", N0,N1);
+          mynvtxRangePop(name_alloc);
+
+          mynvtxRangePush(name_deep_copy);
+          Kokkos::deep_copy(view_tmp, view_src); //Legal because same layout, does the H2D / D2H
+          mynvtxRangePop(name_deep_copy);
+
+          mynvtxRangePush(name_transpose);
+          if (use_transpose_kernel)
+            {
+              transposeKernel<Layout_dest, Layout_src, ExecSpace_tmp>(view_dest, view_tmp);
+            }
+          else//use deep copy (kokkos doc recommandation)
+            {
+              Kokkos::deep_copy(view_dest, view_tmp); //Legal because on the same execspace, does the transpose
+            }
+          mynvtxRangePop(name_transpose);
+        }
+      else
+        {
+          throw("Error");
+        }
+    }
+  Kokkos::fence();
+  mynvtxRangePop(name);
+
+  if (check)
+  {
+  const bool srcIsDevice = std::is_same<ExecSpace_src, Device>::value;
+  const double value_init = srcIsDevice ? gpu_value : cpu_value;
+ // mynvtxRangePush("check", "black");
+  check_result<Layout_dest, ExecSpace_dest>(view_dest, value_init);
+  //mynvtxRangePop();
+  }
+
+}
+
+
+
 int main(int argc, char *argv[])
 {
 
@@ -225,9 +347,12 @@ int main(int argc, char *argv[])
   {
 
     // Size of the view
-    const int ratio = 1;
-    const int N0 = 30000 * ratio;
-    const int N1 = 30000 / ratio;
+    //const int N0 = 2000000;
+    //const int N1 = 3;
+
+    // Size of the view
+    const int N0 = 2450;
+    const int N1 = 2450;
 
     // Allocate the views
     mynvtxRangePush("alloc LL Device", gpu_color);
@@ -246,20 +371,17 @@ int main(int argc, char *argv[])
     auto host_view_LR = ViewLRHost("host_view_LR", N0, N1);
     mynvtxRangePop();
 
-    const double cpu_value = 2.0;
-    const double gpu_value = 4.0;
-
     // Launch init kernels
     InitKernel<LayoutLeft, Device>(device_view_LL, gpu_value);
     InitKernel<LayoutRight, Device>(device_view_LR, gpu_value);
     InitKernel<LayoutLeft, Host>(host_view_LL, cpu_value);
-    InitKernel<LayoutRight, Host>(host_view_LR, cpu_value);
+    //InitKernel<LayoutRight, Host>(host_view_LR, cpu_value);
 
     // Read kernels
-    ReadKernel<LayoutLeft, Device>(device_view_LL);
-    ReadKernel<LayoutRight, Device>(device_view_LR);
-    ReadKernel<LayoutLeft, Host>(host_view_LL);
-    ReadKernel<LayoutRight, Host>(host_view_LR);
+//    ReadKernel<LayoutLeft, Device>(device_view_LL);
+//    ReadKernel<LayoutRight, Device>(device_view_LR);
+//    ReadKernel<LayoutLeft, Host>(host_view_LL);
+//    ReadKernel<LayoutRight, Host>(host_view_LR);
 
     // Launch blurr kernels
     const int nlaunch_gpu = 1;
@@ -287,114 +409,35 @@ int main(int argc, char *argv[])
     Kokkos::deep_copy(host_view_LR, device_view_LR);
     mynvtxRangePop();
 
-    // Deep copy LR to LL H2D transpose on device
-    {
-      mynvtxRangePush("check", "black");
-      InitKernel<LayoutRight, Host>(host_view_LR, cpu_value);
-      mynvtxRangePop();
-      Kokkos::fence();
 
-      mynvtxRangePush("deep copy H2D transpose on Device", H2D_color);
+    //Deep copy generalized: cases that it reduce to simple deep copies
+    //Deep copies generalized - same layout diff execspace
+//    deep_copy_generalized<LayoutLeft, LayoutLeft, Device, Host>(device_view_LL, host_view_LL, false, true);
+//    deep_copy_generalized<LayoutLeft, LayoutLeft, Host, Device>(host_view_LL, device_view_LL, false, true);
+//    deep_copy_generalized<LayoutRight, LayoutRight, Device, Host>(device_view_LR, host_view_LR, false, true);
+//    deep_copy_generalized<LayoutRight, LayoutRight, Host, Device>(host_view_LR, device_view_LR, false, true);
+//    //Deep copies generalized - same execspace diff Layout
+//    deep_copy_generalized<LayoutLeft, LayoutRight, Device, Device>(device_view_LL, device_view_LR, false, true);
+//    deep_copy_generalized<LayoutRight, LayoutLeft, Device, Device>(device_view_LR, device_view_LL, false, true);
+//    deep_copy_generalized<LayoutLeft, LayoutRight, Host, Host>(host_view_LL, host_view_LR, false, true);
+//    deep_copy_generalized<LayoutRight, LayoutLeft, Host, Host>(host_view_LR, host_view_LL, false, true);
 
-      mynvtxRangePush("allocate buffer", gpu_color);
-      auto buffer_H2D = ViewLRDevice("buffer_H2D", N0, N1);
-      mynvtxRangePop();
+    //Deep copy generalized: diff layout and diff execspace H2D, use deep copy for transpose, on H/D
+    deep_copy_generalized<LayoutLeft, LayoutRight, Device, Host, Host>(device_view_LL, host_view_LR, /* use kernel */ false , true);
+    deep_copy_generalized<LayoutLeft, LayoutRight, Device, Host, Device>(device_view_LL, host_view_LR, /* use kernel */false , true);
+    //Deep copy generalized: diff layout and diff execspace H2D, use kernel for transpose on H/D
+    deep_copy_generalized<LayoutLeft, LayoutRight, Device, Host, Host>(device_view_LL, host_view_LR, /* use kernel */ true , true);
+    deep_copy_generalized<LayoutLeft, LayoutRight, Device, Host, Device>(device_view_LL, host_view_LR, /* use kernel */ true , true);
 
-      mynvtxRangePush("deep copy H2D", H2D_color);
-      Kokkos::deep_copy(buffer_H2D, host_view_LR);
-      mynvtxRangePop();
 
-      transposeKernel<LayoutLeft, LayoutRight, Device>(device_view_LL, buffer_H2D, nlaunch_gpu);
-      mynvtxRangePop("deep copy H2D transpose on Device");
-
-      mynvtxRangePush("check", "black");
-      check_result<LayoutLeft, Device>(device_view_LL, cpu_value);
-      mynvtxRangePop();
-    }
-    Kokkos::fence(); // Fence for out of scope dealloc of buffer
-
-    // Deep copy LL to LR D2H, transpose on device
-    {
-      mynvtxRangePush("check", "black");
-      InitKernel<LayoutLeft, Device>(device_view_LL, gpu_value);
-      mynvtxRangePop();
-      Kokkos::fence();
-
-      mynvtxRangePush("deep copy D2H transpose on Device", D2H_color);
-
-      mynvtxRangePush("allocate buffer", gpu_color);
-      auto buffer_D2H = ViewLRDevice("buffer_D2H", N0, N1);
-      mynvtxRangePop();
-
-      transposeKernel<LayoutRight, LayoutLeft, Device>(buffer_D2H, device_view_LL, nlaunch_gpu);
-
-      mynvtxRangePush("deep copy D2H", D2H_color);
-      Kokkos::deep_copy(host_view_LR, buffer_D2H);
-      mynvtxRangePop();
-
-      mynvtxRangePop("deep copy D2H transpose on Device");
-
-      mynvtxRangePush("check", "black");
-      check_result<LayoutRight, Host>(host_view_LR, gpu_value);
-      mynvtxRangePop();
-    }
-    Kokkos::fence(); // Fence for out of scope dealloc of buffer
-
-    // Deep copy LR to LL H2D transpose on host
-    {
-      mynvtxRangePush("check", "black");
-      InitKernel<LayoutRight, Host>(host_view_LR, cpu_value);
-      mynvtxRangePop();
-      Kokkos::fence();
-
-      mynvtxRangePush("deep copy H2D transpose on Host", H2D_color);
-
-      mynvtxRangePush("allocate buffer", cpu_color);
-      auto buffer_H2D = ViewLLHost("buffer_H2D", N0, N1);
-      mynvtxRangePop();
-
-      transposeKernel<LayoutLeft, LayoutRight, Host>(buffer_H2D, host_view_LR, nlaunch_gpu);
-
-      mynvtxRangePush("deep copy H2D", H2D_color);
-      Kokkos::deep_copy(device_view_LL, buffer_H2D);
-      mynvtxRangePop();
-
-      mynvtxRangePop("deep copy H2D transpose on Host");
-
-      mynvtxRangePush("check", "black");
-      check_result<LayoutLeft, Device>(device_view_LL, cpu_value);
-      mynvtxRangePop();
-    }
-    Kokkos::fence(); // Fence for out of scope dealloc of buffer
-
-    // Deep copy LL to LR D2H
-    {
-      mynvtxRangePush("check", "black");
-      InitKernel<LayoutLeft, Device>(device_view_LL, gpu_value);
-      mynvtxRangePop();
-      Kokkos::fence();
-
-      mynvtxRangePush("deep copy D2H transpose on Host", D2H_color);
-
-      mynvtxRangePush("allocate buffer", cpu_color);
-      auto buffer_D2H = ViewLLHost("buffer_D2H", N0, N1);
-      mynvtxRangePop();
-
-      mynvtxRangePush("deep copy D2H", D2H_color);
-      Kokkos::deep_copy(buffer_D2H, device_view_LL);
-      mynvtxRangePop();
-
-      transposeKernel<LayoutRight, LayoutLeft, Host>(host_view_LR, buffer_D2H, nlaunch_gpu);
-
-      mynvtxRangePop("deep copy D2H transpose on Host");
-
-      mynvtxRangePush("check", "black");
-      check_result<LayoutRight, Host>(host_view_LR, gpu_value);
-      mynvtxRangePop();
-    }
-    Kokkos::fence(); // Fence for out of scope dealloc of buffer
+    //Deep copy generalized: diff layout and diff execspace D2H, use deep copy for transpose, on H/D
+    deep_copy_generalized<LayoutRight, LayoutLeft, Host, Device, Host>(host_view_LR,device_view_LL, /* use kernel */ false, true);
+    deep_copy_generalized<LayoutRight, LayoutLeft, Host, Device, Device>(host_view_LR,device_view_LL, /* use kernel */ false , true);
+    //Deep copy generalized: diff layout and diff execspace D2H, use kernel for transpose, on H/D
+    deep_copy_generalized<LayoutRight, LayoutLeft, Host, Device, Host>(host_view_LR,device_view_LL, /* use kernel */ true, true);
+    deep_copy_generalized<LayoutRight, LayoutLeft, Host, Device, Device>(host_view_LR,device_view_LL, /* use kernel */ true , true);
   }
-  mynvtxRangePop();
+  mynvtxRangePop("Main scope");
 
   // Finalize Kokkos runtime
   mynvtxRangePush("Kokkos::finalize", "red");
