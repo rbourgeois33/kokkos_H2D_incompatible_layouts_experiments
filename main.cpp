@@ -347,12 +347,12 @@ int main(int argc, char *argv[])
   {
 
     // Size of the view
-    //const int N0 = 2000000;
-    //const int N1 = 3;
+    const int N0 = 3000000;
+    const int N1 = 3;
 
     // Size of the view
-    const int N0 = 2450;
-    const int N1 = 2450;
+    //const int N0 = 2450;
+    //const int N1 = 2450;
 
     // Allocate the views
     mynvtxRangePush("alloc LL Device", gpu_color);
