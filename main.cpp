@@ -4,6 +4,8 @@
 #include <type_traits>
 #include <string>
 
+using _TYPE_ = float;
+
 // Kokkos aliases
 using Host = Kokkos::DefaultHostExecutionSpace;
 using Device = Kokkos::DefaultExecutionSpace;
@@ -11,13 +13,13 @@ using Device = Kokkos::DefaultExecutionSpace;
 using LayoutRight = Kokkos::LayoutRight;
 using LayoutLeft = Kokkos::LayoutLeft;
 
-using ViewLLDevice = Kokkos::View<double **, LayoutLeft, Device>;
-using ViewLRDevice = Kokkos::View<double **, LayoutRight, Device>;
-using ViewLLHost = Kokkos::View<double **, LayoutLeft, Host>;
-using ViewLRHost = Kokkos::View<double **, LayoutRight, Host>;
+using ViewLLDevice = Kokkos::View<_TYPE_ **, LayoutLeft, Device>;
+using ViewLRDevice = Kokkos::View<_TYPE_ **, LayoutRight, Device>;
+using ViewLLHost = Kokkos::View<_TYPE_ **, LayoutLeft, Host>;
+using ViewLRHost = Kokkos::View<_TYPE_ **, LayoutRight, Host>;
 
 template <class Layout, class ExecSpace>
-using View = Kokkos::View<double **, Layout, ExecSpace>;
+using View = Kokkos::View<_TYPE_ **, Layout, ExecSpace>;
 
 // Wrappers to get nices names and colors in Nsight System
 const std::string cpu_color = "cyan";
@@ -102,7 +104,7 @@ void blurrKernel(View<Layout, ExecSpace> &view, const int nlaunch = 1)
 // kernel that we are timing
 // Inputs are the layout, the execution space
 template <class Layout, class ExecSpace>
-void InitKernel(View<Layout, ExecSpace> &view, const double &value = 1.0, const bool range=true)
+void InitKernel(View<Layout, ExecSpace> &view, const _TYPE_ &value = 1.0, const bool range=true)
 {
 
   const int N0 = view.extent(0);
@@ -139,7 +141,7 @@ void ReadKernel(const View<Layout, ExecSpace> &view)
   Kokkos::fence();
   mynvtxRangePush(message, color);
 
-  Kokkos::parallel_for(message, policy, KOKKOS_LAMBDA(const int i, const int j) { double a = view(i,j); });
+  Kokkos::parallel_for(message, policy, KOKKOS_LAMBDA(const int i, const int j) { _TYPE_ a = view(i,j); });
 
   Kokkos::fence();
   mynvtxRangePop();
@@ -171,16 +173,16 @@ void transposeKernel(View<Layout_dest, ExecSpace> &view_dest, const View<Layout_
 
 // Kernel to check results
 
-// Compare doubles
-static const double delta = 100 * std::numeric_limits<double>::epsilon(); // Tolerance used for real number comparison
+// Compare _TYPE_s
+static const _TYPE_ delta = 100 * std::numeric_limits<_TYPE_>::epsilon(); // Tolerance used for real number comparison
 KOKKOS_INLINE_FUNCTION
-bool is_equal(const double a, const double b)
+bool is_equal(const _TYPE_ a, const _TYPE_ b)
 {
   return (abs(a - b) < delta);
 }
 
 template <class Layout, class ExecSpace>
-void check_result(View<Layout, ExecSpace> &view, const double &value = 1.0)
+void check_result(View<Layout, ExecSpace> &view, const _TYPE_ &value = 1.0)
 {
 
   const int N0 = view.extent(0);
@@ -212,8 +214,8 @@ void check_result(View<Layout, ExecSpace> &view, const double &value = 1.0)
   }
 }
 
-const double cpu_value = 2.0;
-const double gpu_value = 4.0;
+const _TYPE_ cpu_value = 2.0;
+const _TYPE_ gpu_value = 4.0;
 
 //deep copy routine that handles non compatible exec spaces and layouts
 //Non trivial template parameters:
@@ -231,7 +233,7 @@ void deep_copy_generalized(View<Layout_dest, ExecSpace_dest> &view_dest,
   if (check)
     {
       const bool srcIsDevice = std::is_same<ExecSpace_src, Device>::value;
-      const double value_init = srcIsDevice ? gpu_value : cpu_value;
+      const _TYPE_ value_init = srcIsDevice ? gpu_value : cpu_value;
       //mynvtxRangePush("check", "black");
       InitKernel<Layout_src, ExecSpace_src>(view_src, value_init, /*create a nvtx range*/ false);
       Kokkos::fence();
@@ -324,7 +326,7 @@ void deep_copy_generalized(View<Layout_dest, ExecSpace_dest> &view_dest,
   if (check)
   {
   const bool srcIsDevice = std::is_same<ExecSpace_src, Device>::value;
-  const double value_init = srcIsDevice ? gpu_value : cpu_value;
+  const _TYPE_ value_init = srcIsDevice ? gpu_value : cpu_value;
  // mynvtxRangePush("check", "black");
   check_result<Layout_dest, ExecSpace_dest>(view_dest, value_init);
   //mynvtxRangePop();
@@ -348,7 +350,9 @@ int main(int argc, char *argv[])
 
     // Size of the view
     const int N0 = 3000000;
-    const int N1 = 3;
+    const int N1 = 60;
+
+    std::cout<<"Arrays size= "<<float(N0*N1*sizeof(_TYPE_))/(1024*1024*1024)<<"GB\n";
 
     // Size of the view
     //const int N0 = 2450;
